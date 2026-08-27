@@ -170,6 +170,41 @@ class Database:
                     ON users(vip_until);
                 CREATE INDEX IF NOT EXISTS idx_spam_history_user_started
                     ON spam_history(user_id, started_at DESC);
+
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id INTEGER NOT NULL UNIQUE,
+                    guild_id INTEGER NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    ticket_type TEXT NOT NULL CHECK(ticket_type IN ('support', 'report')),
+                    category TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    target TEXT,
+                    evidence TEXT,
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK(status IN ('open', 'closed')),
+                    claimed_by INTEGER,
+                    panel_message_id INTEGER,
+                    created_at INTEGER NOT NULL,
+                    closed_at INTEGER,
+                    closed_by INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS ticket_members (
+                    ticket_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    PRIMARY KEY(ticket_id, user_id),
+                    FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_one_open_per_type
+                    ON tickets(guild_id, owner_id, ticket_type)
+                    WHERE status = 'open';
+                CREATE INDEX IF NOT EXISTS idx_tickets_channel
+                    ON tickets(channel_id);
+                CREATE INDEX IF NOT EXISTS idx_ticket_members_ticket
+                    ON ticket_members(ticket_id);
                 """
             )
             columns = {
@@ -619,3 +654,224 @@ class Database:
     def _health_sync(self) -> bool:
         with self._connection() as connection:
             return connection.execute("SELECT 1").fetchone()[0] == 1
+
+    async def get_ticket_by_channel(self, channel_id: int) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._get_ticket_by_channel_sync, channel_id)
+
+    def _get_ticket_by_channel_sync(self, channel_id: int) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM tickets WHERE channel_id = ?", (channel_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    async def get_open_ticket(
+        self, guild_id: int, owner_id: int, ticket_type: str
+    ) -> dict[str, Any] | None:
+        return await asyncio.to_thread(
+            self._get_open_ticket_sync, guild_id, owner_id, ticket_type
+        )
+
+    def _get_open_ticket_sync(
+        self, guild_id: int, owner_id: int, ticket_type: str
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM tickets
+                WHERE guild_id = ? AND owner_id = ? AND ticket_type = ?
+                      AND status = 'open'
+                """,
+                (guild_id, owner_id, ticket_type),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    async def create_ticket(
+        self,
+        *,
+        channel_id: int,
+        guild_id: int,
+        owner_id: int,
+        ticket_type: str,
+        category: str,
+        subject: str,
+        description: str,
+        target: str | None = None,
+        evidence: str | None = None,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._create_ticket_sync,
+            channel_id,
+            guild_id,
+            owner_id,
+            ticket_type,
+            category,
+            subject,
+            description,
+            target,
+            evidence,
+        )
+
+    def _create_ticket_sync(
+        self,
+        channel_id: int,
+        guild_id: int,
+        owner_id: int,
+        ticket_type: str,
+        category: str,
+        subject: str,
+        description: str,
+        target: str | None,
+        evidence: str | None,
+    ) -> dict[str, Any]:
+        now = int(time.time())
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO tickets(
+                    channel_id, guild_id, owner_id, ticket_type, category,
+                    subject, description, target, evidence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    channel_id,
+                    guild_id,
+                    owner_id,
+                    ticket_type,
+                    category,
+                    subject,
+                    description,
+                    target,
+                    evidence,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM tickets WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+        return dict(row)
+
+    async def set_ticket_panel(self, ticket_id: int, message_id: int) -> None:
+        await asyncio.to_thread(self._set_ticket_panel_sync, ticket_id, message_id)
+
+    def _set_ticket_panel_sync(self, ticket_id: int, message_id: int) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                "UPDATE tickets SET panel_message_id = ? WHERE id = ?",
+                (message_id, ticket_id),
+            )
+
+    async def claim_ticket(self, ticket_id: int, staff_id: int) -> tuple[bool, dict[str, Any]]:
+        return await asyncio.to_thread(self._claim_ticket_sync, ticket_id, staff_id)
+
+    def _claim_ticket_sync(
+        self, ticket_id: int, staff_id: int
+    ) -> tuple[bool, dict[str, Any]]:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                """
+                UPDATE tickets SET claimed_by = ?
+                WHERE id = ? AND status = 'open' AND claimed_by IS NULL
+                """,
+                (staff_id, ticket_id),
+            ).rowcount
+            row = connection.execute(
+                "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+            ).fetchone()
+        return changed == 1, dict(row)
+
+    async def close_ticket(self, ticket_id: int, closed_by: int) -> dict[str, Any]:
+        return await asyncio.to_thread(self._close_ticket_sync, ticket_id, closed_by)
+
+    def _close_ticket_sync(self, ticket_id: int, closed_by: int) -> dict[str, Any]:
+        now = int(time.time())
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE tickets
+                SET status = 'closed', closed_at = ?, closed_by = ?
+                WHERE id = ? AND status = 'open'
+                """,
+                (now, closed_by, ticket_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+            ).fetchone()
+        return dict(row)
+
+    async def reopen_ticket(self, ticket_id: int) -> dict[str, Any]:
+        return await asyncio.to_thread(self._reopen_ticket_sync, ticket_id)
+
+    def _reopen_ticket_sync(self, ticket_id: int) -> dict[str, Any]:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT guild_id, owner_id, ticket_type FROM tickets WHERE id = ?",
+                (ticket_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError("Ticket not found")
+            duplicate = connection.execute(
+                """
+                SELECT id FROM tickets
+                WHERE guild_id = ? AND owner_id = ? AND ticket_type = ?
+                      AND status = 'open' AND id != ?
+                """,
+                (row["guild_id"], row["owner_id"], row["ticket_type"], ticket_id),
+            ).fetchone()
+            if duplicate is not None:
+                raise sqlite3.IntegrityError("An open ticket of this type already exists")
+            connection.execute(
+                """
+                UPDATE tickets
+                SET status = 'open', closed_at = NULL, closed_by = NULL
+                WHERE id = ?
+                """,
+                (ticket_id,),
+            )
+            updated = connection.execute(
+                "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+            ).fetchone()
+        return dict(updated)
+
+    async def add_ticket_member(self, ticket_id: int, user_id: int) -> None:
+        await asyncio.to_thread(self._add_ticket_member_sync, ticket_id, user_id)
+
+    def _add_ticket_member_sync(self, ticket_id: int, user_id: int) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO ticket_members(ticket_id, user_id) VALUES (?, ?)",
+                (ticket_id, user_id),
+            )
+
+    async def remove_ticket_member(self, ticket_id: int, user_id: int) -> bool:
+        return await asyncio.to_thread(
+            self._remove_ticket_member_sync, ticket_id, user_id
+        )
+
+    def _remove_ticket_member_sync(self, ticket_id: int, user_id: int) -> bool:
+        with self._connection() as connection:
+            changed = connection.execute(
+                "DELETE FROM ticket_members WHERE ticket_id = ? AND user_id = ?",
+                (ticket_id, user_id),
+            ).rowcount
+        return changed == 1
+
+    async def get_ticket_members(self, ticket_id: int) -> list[int]:
+        return await asyncio.to_thread(self._get_ticket_members_sync, ticket_id)
+
+    def _get_ticket_members_sync(self, ticket_id: int) -> list[int]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT user_id FROM ticket_members WHERE ticket_id = ? ORDER BY user_id",
+                (ticket_id,),
+            ).fetchall()
+        return [int(row["user_id"]) for row in rows]
+
+    async def delete_ticket(self, ticket_id: int) -> None:
+        await asyncio.to_thread(self._delete_ticket_sync, ticket_id)
+
+    def _delete_ticket_sync(self, ticket_id: int) -> None:
+        with self._connection() as connection:
+            connection.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
