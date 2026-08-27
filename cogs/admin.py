@@ -132,6 +132,11 @@ class RemoveVipModal(AdminModal):
         if user_id is None:
             await send_ephemeral(interaction, "❌ Некорректный ID пользователя.")
             return
+        if user_id in config.OWNER_USER_IDS:
+            await send_ephemeral(
+                interaction, "❌ Постоянный VIP владельца отключить нельзя."
+            )
+            return
         await interaction.response.defer(ephemeral=True)
         await self.bot.db.remove_vip(user_id)
         await interaction.followup.send(

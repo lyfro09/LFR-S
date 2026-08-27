@@ -102,6 +102,10 @@ class LFRClient(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.db.initialize()
+        for owner_id in config.OWNER_USER_IDS:
+            await self.db.set_permanent_vip(
+                owner_id, config.PERMANENT_VIP_UNTIL
+            )
         for extension in EXTENSIONS:
             await self.load_extension(extension)
             print(f"[COG] loaded {extension}")

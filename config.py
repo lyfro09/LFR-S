@@ -46,7 +46,11 @@ def _ids_from_env(name: str) -> set[int]:
 
 # IDs can be supplied as comma-separated environment variables. Literal IDs may
 # also be added to these sets later without changing the rest of the project.
-ADMIN_USER_IDS: set[int] = _ids_from_env("ADMIN_USER_IDS") | set()
+OWNER_USER_IDS: set[int] = {
+    689455809612349463,
+}
+
+ADMIN_USER_IDS: set[int] = _ids_from_env("ADMIN_USER_IDS") | OWNER_USER_IDS
 # Example for literal IDs: ADMIN_USER_IDS.add(123456789012345678)
 
 MOD_USER_IDS: set[int] = _ids_from_env("MOD_USER_IDS") | set()
