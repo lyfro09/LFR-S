@@ -76,7 +76,11 @@ class SafeView(discord.ui.View):
         error: Exception,
         item: discord.ui.Item[Any],
     ) -> None:
-        print(f"[TICKET VIEW ERROR] {type(error).__name__}: {error}")
+        print(
+            f"[TICKET VIEW ERROR] custom_id={getattr(item, 'custom_id', None)} "
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
         try:
             await ephemeral(interaction, "❌ Не удалось выполнить действие.")
         except discord.HTTPException:
@@ -108,15 +112,21 @@ class SupportPanelView(SafeView):
     async def create(
         self, interaction: discord.Interaction, button: discord.ui.Button[Any]
     ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        print(
+            f"[TICKET UI] support panel user={interaction.user.id} "
+            f"guild={interaction.guild_id}",
+            flush=True,
+        )
         embed = discord.Embed(
             title="🎫 Категория обращения",
             description="Выбери направление, с которым нужна помощь.",
             color=EMBED_COLOR,
         )
-        await ephemeral(
-            interaction,
+        await interaction.followup.send(
             embed=embed,
             view=TicketCategoryView(interaction.user.id, "support"),
+            ephemeral=True,
         )
 
 
@@ -133,15 +143,21 @@ class ReportPanelView(SafeView):
     async def create(
         self, interaction: discord.Interaction, button: discord.ui.Button[Any]
     ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        print(
+            f"[TICKET UI] report panel user={interaction.user.id} "
+            f"guild={interaction.guild_id}",
+            flush=True,
+        )
         embed = discord.Embed(
             title="🚨 Причина обращения",
             description="Выбери наиболее подходящую категорию.",
             color=ERROR_COLOR,
         )
-        await ephemeral(
-            interaction,
+        await interaction.followup.send(
             embed=embed,
             view=TicketCategoryView(interaction.user.id, "report"),
+            ephemeral=True,
         )
 
 

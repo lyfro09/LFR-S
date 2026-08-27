@@ -122,6 +122,7 @@ class LFRClient(commands.Bot):
         print(f"BOT ID: {self.user.id}")
         print(f"MESSAGES LOADED: {len(self.loaded_messages)}")
         print(f"DATABASE: {config.DATABASE_PATH}")
+        print(f"TICKET VIEWS: {len(self.persistent_views)}")
         print("=" * 60)
 
 
