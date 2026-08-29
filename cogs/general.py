@@ -48,6 +48,8 @@ class GeneralCog(commands.Cog):
             name="💎 VIP",
             value=(
                 "`/vip` — статус и преимущества\n"
+                "`/buyvip` — купить VIP за USDT\n"
+                "`/paymentstatus` — обновить статус оплаты\n"
                 "`/keyuse` — активировать ключ\n"
                 "`/shop` — магазин\n"
                 "`/viptrial` — пробный VIP"

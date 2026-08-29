@@ -13,7 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
-from cogs.utils import EMBED_COLOR, ERROR_COLOR, OwnerView, is_vip, send_ephemeral
+from cogs.utils import EMBED_COLOR, ERROR_COLOR, OwnerView, is_vip
 
 
 SpamMode = Literal["random", "duplicate", "unicode", "caps", "long", "mixed"]
@@ -91,7 +91,6 @@ class SpamView(OwnerView):
         self.count = count
         self.delay = delay
         self.mode = mode
-        self.running = False
 
     @discord.ui.button(
         label="Старт",
@@ -101,32 +100,21 @@ class SpamView(OwnerView):
     async def start_spam(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if self.running:
-            await send_ephemeral(interaction, "⚠️ Отправка уже выполняется")
-            return
-
-        # There is no await between reading and assigning the state, so rapid
-        # double clicks on this panel cannot start two callback loops.
-        self.running = True
-        try:
-            # A deferred message update acknowledges the click without putting
-            # the ephemeral panel into a long "thinking" state. The unchanged
-            # Start button therefore remains clickable while messages are sent.
-            await interaction.response.defer()
-            session = await self.cog.begin_session(
-                interaction.user.id,
-                self.count,
-                self.delay,
-                self.mode,
+        # Acknowledge the component immediately. The actual run continues in a
+        # tracked background task, so the view callback cannot time out.
+        await interaction.response.defer()
+        session = await self.cog.begin_session(
+            interaction.user.id,
+            self.count,
+            self.delay,
+            self.mode,
+        )
+        if session is None:
+            await interaction.followup.send(
+                "⚠️ Отправка уже выполняется", ephemeral=True
             )
-            if session is None:
-                await interaction.followup.send(
-                    "⚠️ Отправка уже выполняется", ephemeral=True
-                )
-                return
-            await self.cog.execute_session(interaction, session)
-        finally:
-            self.running = False
+            return
+        self.cog.start_session_task(interaction, session)
 
     async def on_timeout(self) -> None:
         for item in self.children:
@@ -140,6 +128,35 @@ class SpamCog(commands.Cog):
         self.bot = bot
         self.active_sessions: dict[int, SpamSession] = {}
         self._session_lock = asyncio.Lock()
+        self._session_tasks: set[asyncio.Task[None]] = set()
+
+    def start_session_task(
+        self, interaction: discord.Interaction, session: SpamSession
+    ) -> None:
+        task = asyncio.create_task(
+            self.execute_session(interaction, session),
+            name=f"spam-session-{session.history_id}",
+        )
+        self._session_tasks.add(task)
+        task.add_done_callback(self._session_finished)
+
+    def _session_finished(self, task: asyncio.Task[None]) -> None:
+        self._session_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            print(
+                f"[SPAM TASK ERROR] {type(error).__name__}: {error}",
+                flush=True,
+            )
+
+    async def cog_unload(self) -> None:
+        tasks = tuple(self._session_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _mode_pack(self, mode: str) -> list[str]:
         packs = self.bot.message_packs
@@ -239,10 +256,24 @@ class SpamCog(commands.Cog):
             selected_messages = self.select_messages(
                 session.mode, session.requested_messages
             )
-            for number, message_text in enumerate(selected_messages, start=1):
+            next_send_at = time.monotonic()
+            for message_text in selected_messages:
                 if session.stop_event.is_set():
                     session.status = "stopped"
                     break
+
+                remaining = next_send_at - time.monotonic()
+                if remaining > 0:
+                    try:
+                        await asyncio.wait_for(
+                            session.stop_event.wait(), timeout=remaining
+                        )
+                    except TimeoutError:
+                        pass
+                    if session.stop_event.is_set():
+                        session.status = "stopped"
+                        break
+
                 try:
                     await interaction.followup.send(
                         message_text,
@@ -264,16 +295,9 @@ class SpamCog(commands.Cog):
                     error_message = f"Ошибка Discord при отправке ({error.status})."
                     break
 
-                if number < session.requested_messages:
-                    try:
-                        await asyncio.wait_for(
-                            session.stop_event.wait(), timeout=session.delay
-                        )
-                    except TimeoutError:
-                        pass
-                    if session.stop_event.is_set():
-                        session.status = "stopped"
-                        break
+                # Pace by planned send-start time. Network latency and Discord's
+                # own rate-limit waits no longer get added on top of the delay.
+                next_send_at += session.delay
 
             if session.status == "running":
                 session.status = "completed"
@@ -355,7 +379,7 @@ class SpamCog(commands.Cog):
         count: app_commands.Range[int, 1, config.VIP_MAX_MESSAGES] = 5,
         delay: app_commands.Range[
             float, config.VIP_MIN_DELAY, config.MAX_DELAY
-        ] = 0.5,
+        ] = config.FREE_MIN_DELAY,
         mode: SpamMode = "random",
     ) -> None:
         await interaction.response.defer(ephemeral=True)

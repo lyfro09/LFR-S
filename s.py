@@ -62,11 +62,11 @@ def load_message_packs(default_messages: list[str]) -> dict[str, list[str]]:
 
 
 EXTENSIONS = (
-    "cogs.tickets",
     "cogs.spam",
     "cogs.profile",
     "cogs.economy",
     "cogs.vip",
+    "cogs.payments",
     "cogs.admin",
     "cogs.general",
 )
@@ -79,17 +79,16 @@ class LFRClient(commands.Bot):
 
     def __init__(self) -> None:
         intents = discord.Intents.default()
-        intents.message_content = True
         activity = discord.Activity(
             type=discord.ActivityType.watching,
             name="LFR Community",
         )
         super().__init__(
-            command_prefix=".",
+            command_prefix=commands.when_mentioned,
             intents=intents,
             activity=activity,
             allowed_installs=app_commands.AppInstallationType(
-                guild=True,
+                guild=False,
                 user=True,
             ),
             allowed_contexts=app_commands.AppCommandContext(
@@ -122,7 +121,6 @@ class LFRClient(commands.Bot):
         print(f"BOT ID: {self.user.id}")
         print(f"MESSAGES LOADED: {len(self.loaded_messages)}")
         print(f"DATABASE: {config.DATABASE_PATH}")
-        print(f"TICKET VIEWS: {len(self.persistent_views)}")
         print("=" * 60)
 
 

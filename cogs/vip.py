@@ -29,6 +29,7 @@ class VipCog(commands.Cog):
             f"• до {config.VIP_MAX_MESSAGES} сообщений за запуск\n"
             f"• задержка от {config.VIP_MIN_DELAY:.1f}s\n"
             "• дополнительные будущие функции\n\n"
+            "**Покупка:** `/buyvip` — 1, 7 или 30 дней за USDT\n\n"
             f"**Твой статус:** {status}"
         )
         if vip_active:
